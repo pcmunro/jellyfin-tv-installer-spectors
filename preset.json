@@ -1,0 +1,6 @@
+{
+    "buildName":  "spectors",
+    "title":  "Jellyfin installer for spectors",
+    "assetName":  "Jellyfin.wgt",
+    "jellyfinServerUrl":  "https://jellyfin.pcmunro.synology.me"
+}

@@ -1,0 +1,144 @@
+diff --git a/Jellyfin2Samsung-CrossOS/App.axaml.cs b/Jellyfin2Samsung-CrossOS/App.axaml.cs
+index 2a1fc9b..e208fd4 100644
+--- a/Jellyfin2Samsung-CrossOS/App.axaml.cs
++++ b/Jellyfin2Samsung-CrossOS/App.axaml.cs
+@@ -60,6 +60,8 @@ namespace Apps2Samsung
+             var services = new ServiceCollection();
+ 
+             var settings = AppSettings.Load();
++            Preset.Load();
++            Preset.ApplyTo(settings);
+ 
+             // --------------------
+             // Core services
+@@ -173,6 +175,8 @@ namespace Apps2Samsung
+                 {
+                     DataContext = vm
+                 };
++                if (!string.IsNullOrWhiteSpace(Preset.Current?.Title))
++                    window.Title = Preset.Current.Title;
+ 
+                 // IMPORTANT: prevent memory leak
+                 window.Closed += (_, _) =>
+diff --git a/Jellyfin2Samsung-CrossOS/Helpers/Preset.cs b/Jellyfin2Samsung-CrossOS/Helpers/Preset.cs
+new file mode 100644
+index 0000000..e3d4757
+--- /dev/null
++++ b/Jellyfin2Samsung-CrossOS/Helpers/Preset.cs
+@@ -0,0 +1,59 @@
++using Avalonia.Platform;
++using System;
++using System.Diagnostics;
++using System.Text.Json;
++
++namespace Apps2Samsung.Helpers
++{
++    /// <summary>
++    /// Optional per-person build preset, read from Assets/preset.json (only present in
++    /// custom builds). Preselects the Jellyfin release asset, pins the Jellyfin server
++    /// address written into the TV app, labels the window and turns off the update check
++    /// so the custom build isn't replaced by a stock one.
++    /// </summary>
++    public sealed class Preset
++    {
++        private static readonly Uri PresetUri = new("avares://Apps2Samsung/Assets/preset.json");
++
++        public string? Title { get; set; }
++        public string? AssetName { get; set; }
++        public string? JellyfinServerUrl { get; set; }
++
++        public static Preset? Current { get; private set; }
++
++        public static void Load()
++        {
++            try
++            {
++                if (!AssetLoader.Exists(PresetUri))
++                    return;
++
++                using var stream = AssetLoader.Open(PresetUri);
++                Current = JsonSerializer.Deserialize<Preset>(stream,
++                    new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
++                Trace.WriteLine($"[Preset] loaded: asset={Current?.AssetName} server={Current?.JellyfinServerUrl}");
++            }
++            catch (Exception ex)
++            {
++                Trace.WriteLine($"[Preset] failed to load: {ex.Message}");
++                Current = null;
++            }
++        }
++
++        public static void ApplyTo(AppSettings settings)
++        {
++            if (Current == null)
++                return;
++
++            if (!string.IsNullOrWhiteSpace(Current.JellyfinServerUrl))
++            {
++                settings.JellyfinIP = Current.JellyfinServerUrl.TrimEnd('/');
++                settings.JellyfinBasePath = "";
++                settings.ServerInputMode = "Full URL";
++            }
++
++            settings.CheckForUpdatesOnStartup = false;
++            settings.Save();
++        }
++    }
++}
+diff --git a/Jellyfin2Samsung-CrossOS/ViewModels/MainWindowViewModel.cs b/Jellyfin2Samsung-CrossOS/ViewModels/MainWindowViewModel.cs
+index 04142b6..fd42ffb 100644
+--- a/Jellyfin2Samsung-CrossOS/ViewModels/MainWindowViewModel.cs
++++ b/Jellyfin2Samsung-CrossOS/ViewModels/MainWindowViewModel.cs
+@@ -277,8 +277,10 @@ namespace Apps2Samsung.ViewModels
+ 
+             try
+             {
+-                // Check for updates first (non-blocking, runs in background)
+-                _ = CheckForUpdatesAsync();
++                // Check for updates first (non-blocking, runs in background).
++                // Preset builds skip it so they aren't replaced by a stock build.
++                if (Preset.Current == null)
++                    _ = CheckForUpdatesAsync();
+ 
+                 // Evaluate the VPN/tunnel warning up front, independent of the (slow) network
+                 // scan, so the banner appears immediately on startup.
+@@ -851,6 +853,30 @@ namespace Apps2Samsung.ViewModels
+             await LoadReleasesAsync();
+         }
+ 
++        // Preset builds: select the jellyfin-tizen-builds release that carries the preset's
++        // asset (e.g. "Jellyfin-OblongIcon.wgt"), then that asset. Matching on the asset name
++        // avoids the AVPlay/Legacy providers that share the "Jellyfin - " prefix. SelectedAsset
++        // must be set after SelectedRelease, whose change handler resets it to the default.
++        private void ApplyPresetSelection()
++        {
++            var assetName = Preset.Current?.AssetName;
++            if (string.IsNullOrWhiteSpace(assetName))
++                return;
++
++            var release = Releases.FirstOrDefault(r =>
++                r.Assets.Any(a => a.FileName.Equals(assetName, StringComparison.OrdinalIgnoreCase)));
++            if (release == null)
++            {
++                Trace.WriteLine($"[Preset] no release offers {assetName}");
++                return;
++            }
++
++            SelectedRelease = release;
++            SelectedAsset = AvailableAssets.FirstOrDefault(a =>
++                a.FileName.Equals(assetName, StringComparison.OrdinalIgnoreCase)) ?? SelectedAsset;
++            Trace.WriteLine($"[Preset] selected {release.Name} / {SelectedAsset?.FileName}");
++        }
++
+         private async Task LoadReleasesAsync(CancellationToken cancellationToken = default)
+         {
+             // Guard against concurrent loads (init vs. the recovery/refresh paths).
+@@ -914,6 +940,8 @@ namespace Apps2Samsung.ViewModels
+                 Releases.Clear();
+                 foreach (var r in list)
+                     Releases.Add(r);
++
++                ApplyPresetSelection();
+             }
+             catch (OperationCanceledException)
+             {
