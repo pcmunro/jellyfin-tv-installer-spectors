@@ -40,8 +40,8 @@ $sdks = & $Dotnet --list-sdks
 if (-not ($sdks -match '^10\.')) { throw ".NET 10 SDK not found (dotnet: $Dotnet)." }
 
 # Short work path: Apps2Samsung's deep source tree trips Windows' 260-char path limit.
-$work = Join-Path $env:TEMP "a2s-$($preset.buildName)"
-if (Test-Path $work) { cmd /c "rmdir /s /q `"$work`"" | Out-Null }
+# Unique per run: antivirus scanning can briefly lock files left by a previous build.
+$work = Join-Path $env:TEMP ('a2s-{0}-{1}' -f $preset.buildName, (Get-Date -Format 'yyyyMMddHHmmss'))
 
 Write-Host "Cloning Apps2Samsung $Apps2SamsungTag ..."
 git -c core.longpaths=true -c advice.detachedHead=false clone -q --depth 1 --branch $Apps2SamsungTag `
@@ -82,9 +82,14 @@ $zip = Join-Path $dist "$name.zip"
 if (Test-Path $zip) { [IO.File]::Delete($zip) }
 Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $zip
 
-# The .NET build server keeps files in $work open; stop it so the cleanup succeeds.
-& $Dotnet build-server shutdown | Out-Null
-cmd /c "rmdir /s /q `"$work`"" 2>$null | Out-Null
+# The .NET build server keeps files in $work open; stop it, then clean up (best effort).
+try { & $Dotnet build-server shutdown *> $null } catch { }
+try {
+    Get-ChildItem $work -Recurse -Force | ForEach-Object { $_.Attributes = 'Normal' }  # git marks pack files read-only
+    [IO.Directory]::Delete($work, $true)
+} catch {
+    Write-Host "Note: couldn't remove $work (a file is in use); it's safe to delete later."
+}
 
 foreach ($f in $exe, $zip) {
     $i = Get-Item $f
